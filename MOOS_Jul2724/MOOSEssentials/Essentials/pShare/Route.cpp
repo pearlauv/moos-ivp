@@ -7,6 +7,8 @@
 
 #include <sstream>
 #include <iostream>
+#include <chrono>
+#include <cmath>
 
 #include "MOOS/libMOOS/Utils/MOOSUtilityFunctions.h"
 #include "Route.h"
@@ -16,6 +18,11 @@ namespace MOOS {
 Route::Route() {
     last_time_sent = 0.0;
     frequency   = 0.0;
+    behavior = FORWARD;
+    rate_clock = MOOS_TIME;
+    has_sent = false;
+    last_sent_rate = 0.0;
+    has_pending = false;
 	duration_of_share = -1.0; 
 	max_shares = 0;
 	num_shares_completed = 0;
@@ -46,11 +53,39 @@ bool Route::IsActive(const double time_now){
 		return false;
 	}
 
-	//is the immediate frequency of shares too high?
-	if(frequency>0.0 && time_now-last_time_sent<(1.0/frequency)){
-		return false;
-	}
+	// Rate behavior is applied by pShare, independently of route lifetime.
 	return true;
+}
+
+double Route::RateNow() const
+{
+	return rate_clock == MOOS_TIME ? MOOS::Time() :
+		std::chrono::duration<double>(
+			std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool Route::RateLimited(double now)
+{
+	if(!has_sent || frequency <= 0.0)
+		return false;
+	if(!std::isfinite(now))
+		return true;
+	// A MOOS clock rewind must not hold pending data until the old epoch.
+	// Restart only the rate interval; preserve pending data and lifetime rules.
+	if(now < last_sent_rate)
+		last_sent_rate = now;
+	return now - last_sent_rate < 1.0/frequency;
+}
+
+std::string Route::rate_clock_name() const
+{
+	return rate_clock == MOOS_TIME ? "moos" : "wall";
+}
+
+std::string Route::behavior_name() const
+{
+	return behavior == FORWARD ? "forward" : behavior == DROP ? "drop" :
+		behavior == COALESCE ? "coalesce" : "latest";
 }
 
 std::string Route::to_string() const
@@ -62,6 +97,8 @@ std::string Route::to_string() const
 			<<"src_name : "<<src_name<<std::endl
 			<<"multicast: "<<multicast<<std::endl
 	        <<"frequency: "<<frequency<<std::endl
+	        <<"behavior : "<<behavior_name()<<std::endl
+	        <<"rate clock: "<<rate_clock_name()<<std::endl
 			<<"duration : "<<duration_of_share<<std::endl
 			<<"maxshares: "<<max_shares<<std::endl;
 			

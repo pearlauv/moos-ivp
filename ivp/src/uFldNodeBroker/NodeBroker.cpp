@@ -23,6 +23,7 @@
 
 #include <unistd.h>
 #include <iterator>
+#include <cmath>
 #include "HostRecord.h"
 #include "HostRecordUtils.h"
 #include "UFieldUtils.h"
@@ -324,7 +325,8 @@ void NodeBroker::registerUserBridges()
 	string src   = m_bridge_src_var[i];
 	string dest  = m_bridge_alias[i];
 	string route = m_shore_routes[k];
-	postPShareCommand(src, dest, route);
+	postPShareCommand(src, dest, route, m_bridge_frequency[i], m_bridge_behavior[i],
+			  m_bridge_rate_clock[i]);
       }
     }
   }
@@ -337,7 +339,7 @@ void NodeBroker::registerUserBridges()
 bool NodeBroker::handleConfigBridge(string line)
 {
   // Part 1: Get the Source and Alias components
-  string src, alias;
+  string src, alias, frequency, behavior, rate_clock;
   vector<string> svector = parseString(line, ',');
   unsigned int i, vsize = svector.size();
   for(i=0; i<vsize; i++) {
@@ -347,17 +349,47 @@ bool NodeBroker::handleConfigBridge(string line)
       src = right;
     else if(left == "alias")
       alias = right;
+    else if(left == "frequency")
+      frequency = stripBlankEnds(right);
+    else if(left == "behavior")
+      behavior = tolower(stripBlankEnds(right));
+    else if(left == "rate_clock") {
+      rate_clock = tolower(stripBlankEnds(right));
+      if(rate_clock != "wall" && rate_clock != "moos")
+        return(false);
+    }
+    else
+      return(false);
   }
   if((src == "") || strContainsWhite(src))
     return(false);
   if((alias == "") || strContainsWhite(alias))
     alias = src;
 
-  // Part 2: If this bridge was already established, this request is
-  // ignored with no error or warning.
-  if(vectorContains(m_bridge_src_var, src) &&
-     vectorContains(m_bridge_alias, alias))
-    return(true);
+  // Validate policy, but leave timing and opaque payload handling to pShare.
+  if(!frequency.empty() &&
+     (!isNumber(frequency) || !std::isfinite(atof(frequency.c_str())) ||
+      atof(frequency.c_str()) <= 0))
+    return(false);
+  if(!behavior.empty() && behavior != "forward" && behavior != "drop" &&
+     behavior != "coalesce" && behavior != "latest")
+    return(false);
+  if((behavior == "forward" && !frequency.empty()) ||
+     (!behavior.empty() && behavior != "forward" && frequency.empty()))
+    return(false);
+
+  // Auto bridges must not overwrite an explicit user policy. Reject actual
+  // conflicts rather than silently losing the requested behavior.
+  for(unsigned int ix=0; ix<m_bridge_src_var.size(); ++ix) {
+    if(m_bridge_src_var[ix] == src && m_bridge_alias[ix] == alias) {
+      if(frequency.empty() && behavior.empty() && rate_clock.empty())
+        return(true);
+      const string existing_clock = m_bridge_rate_clock[ix].empty() ? "moos" : m_bridge_rate_clock[ix];
+      const string requested_clock = rate_clock.empty() ? "moos" : rate_clock;
+      return(m_bridge_frequency[ix] == frequency && m_bridge_behavior[ix] == behavior &&
+             existing_clock == requested_clock);
+    }
+  }
 
   // Part 3: Take note of the implied messaging policy, so we can
   // post a run warning based on the presence of pMediator
@@ -378,9 +410,12 @@ bool NodeBroker::handleConfigBridge(string line)
     m_messaging_policy = "mediated";
   }
 
-  // Part 4: Add the components.
+  // Part 4: Add the components. Timing is not implemented by the broker.
   m_bridge_src_var.push_back(src);
   m_bridge_alias.push_back(alias);
+  m_bridge_frequency.push_back(frequency);
+  m_bridge_behavior.push_back(behavior);
+  m_bridge_rate_clock.push_back(rate_clock);
   return(true);
 }
 
@@ -522,7 +557,8 @@ void NodeBroker::handleMailHostInfo(string phi_msg)
 //------------------------------------------------------------
 // Procedure: postPShareCommand()
 
-void NodeBroker::postPShareCommand(string src, string dest, string route)
+void NodeBroker::postPShareCommand(string src, string dest, string route,
+                                   string frequency, string behavior, string rate_clock)
 {
   if((src == "NODE_MESSAGE_LOCAL") && (m_messaging_policy != "unmediated"))
     return;
@@ -534,6 +570,9 @@ void NodeBroker::postPShareCommand(string src, string dest, string route)
   msg += ",src_name="  + src;
   msg += ",dest_name=" + dest;
   msg += ",route=" + route;
+  if(!frequency.empty()) msg += ",frequency=" + frequency;
+  if(!behavior.empty()) msg += ",behavior=" + behavior;
+  if(!rate_clock.empty()) msg += ",rate_clock=" + rate_clock;
   Notify("PSHARE_CMD", msg);
   
   m_pshare_cmd_posted++;
@@ -601,6 +640,19 @@ bool NodeBroker::buildReport()
     actab << m_shore_timewarp[k];
   }
   m_msgs << actab.getFormattedString();
+
+  ACTable policies(5);
+  policies << "Source | Alias | Frequency | Behavior | Rate clock";
+  policies.addHeaderLines();
+  for(unsigned int ix=0; ix<m_bridge_src_var.size(); ++ix) {
+    policies << m_bridge_src_var[ix] << m_bridge_alias[ix]
+             << (m_bridge_frequency[ix].empty() ? "none" : m_bridge_frequency[ix])
+             << (m_bridge_behavior[ix].empty() ?
+                 (m_bridge_frequency[ix].empty() ? "forward" : "drop") :
+                 m_bridge_behavior[ix])
+             << (m_bridge_rate_clock[ix].empty() ? "moos" : m_bridge_rate_clock[ix]);
+  }
+  m_msgs << "\nPer-bridge pShare policies:\n" << policies.getFormattedString();
 
   m_msgs << endl << endl;
 

@@ -9,11 +9,13 @@
 #include <netdb.h>
 
 #include <map>
+#include <list>
 #include <stdexcept>
 #include <string>
 #include <iomanip>
 #include <vector>
 #include <limits>
+#include <cmath>
 
 #include "MOOS/libMOOS/Utils/MOOSUtilityFunctions.h"
 #include "MOOS/libMOOS/Utils/IPV4Address.h"
@@ -64,6 +66,9 @@ public:
 protected:
 
 	bool ApplyRoutes(CMOOSMsg & msg);
+	bool SendRoute(const CMOOSMsg & msg, Route & route);
+	bool DispatchRoute(const CMOOSMsg & msg, Route & route);
+	void FlushPending();
 
 	bool ApplyWildcardRoutes( CMOOSMsg& msg);
 
@@ -85,14 +90,14 @@ protected:
 				bool multicast,
 				double frequency,
 				double duration,
-				int max_shares);
+				int max_shares, Route::Behavior behavior, Route::RateClock rate_clock);
 
 	bool  AddMulticastAliasRoute(const std::string & src_name,
 					const std::string & dest_name,
 					unsigned int channel_num,
 					double frequency,
 					double duration,
-					int max_shares);
+					int max_shares, Route::Behavior behavior, Route::RateClock rate_clock);
 
 	MOOS::IPV4Address GetAddressFromChannelAlias(unsigned int channel_number) const;
 
@@ -323,6 +328,7 @@ bool Share::Impl::OnStartUp()
 	catch(const std::exception & e)
 	{
 		std::cerr<<RED<<"OnStartUp::exception "<<e.what()<<NORMAL<< std::endl;
+		return false;
 	}
 
 
@@ -525,7 +531,39 @@ bool Share::Impl::ProcessIOConfigurationString(std::string  configuration_string
 	//MOOSValFromString(bDelete,configuration_string,"delete");
 
 	double frequency = 0.0;
-	MOOSValFromString(frequency,configuration_string,"frequency");
+	std::string frequency_text;
+	if(MOOSValFromString(frequency_text, configuration_string, "frequency")) {
+		if(!MOOSIsNumeric(frequency_text))
+			throw std::runtime_error("frequency must be a numeric rate in Hz");
+		frequency = std::stod(frequency_text);
+	}
+	if(!std::isfinite(frequency) || frequency < 0.0)
+		throw std::runtime_error("frequency must be a finite, non-negative rate in Hz");
+
+	std::string mode;
+	const bool has_mode = MOOSValFromString(mode, configuration_string, "behavior");
+	// Existing frequency/@Hz routes retain drop semantics. No rate forwards.
+	Route::Behavior behavior = frequency > 0.0 ? Route::DROP : Route::FORWARD;
+	if(has_mode) {
+		if(MOOSStrCmp(mode, "forward")) behavior = Route::FORWARD;
+		else if(MOOSStrCmp(mode, "drop")) behavior = Route::DROP;
+		else if(MOOSStrCmp(mode, "coalesce")) behavior = Route::COALESCE;
+		else if(MOOSStrCmp(mode, "latest")) behavior = Route::LATEST;
+		else throw std::runtime_error("behavior must be forward, drop, coalesce or latest");
+		if((behavior == Route::FORWARD && frequency != 0.0) ||
+			(behavior != Route::FORWARD && frequency <= 0.0))
+			throw std::runtime_error("forward has no frequency; other behaviors need a positive frequency");
+	}
+
+	Route::RateClock rate_clock = Route::MOOS_TIME;
+	std::string clock;
+	if(MOOSValFromString(clock, configuration_string, "rate_clock")) {
+		if(!is_output)
+			throw std::runtime_error("rate_clock is only valid for outputs");
+		if(MOOSStrCmp(clock, "wall")) rate_clock = Route::WALL_TIME;
+		else if(MOOSStrCmp(clock, "moos")) rate_clock = Route::MOOS_TIME;
+		else throw std::runtime_error("rate_clock must be wall or moos");
+	}
 
 	while (!routes.empty()) {
 		//look for a space separated list of routes...
@@ -546,7 +584,7 @@ bool Share::Impl::ProcessIOConfigurationString(std::string  configuration_string
 			if (is_output)
 			{
 				if (!AddMulticastAliasRoute(src_name, dest_name,
-						channel_num,frequency,duration, max_shares))
+						channel_num,frequency,duration, max_shares,behavior,rate_clock))
 					return false;
 			}
 			else
@@ -563,7 +601,7 @@ bool Share::Impl::ProcessIOConfigurationString(std::string  configuration_string
 
 			if (is_output)
 			{
-				if (!AddRoute(src_name, dest_name, route_address, false,frequency,duration,max_shares))
+				if (!AddRoute(src_name, dest_name, route_address, false,frequency,duration,max_shares,behavior,rate_clock))
 					return false;
 			}
 			else
@@ -607,6 +645,7 @@ bool Share::Impl::Iterate()
 
 	
 
+	FlushPending();
 	PublishSharingStatus();
 	return true;
 }
@@ -618,7 +657,7 @@ bool Share::Impl::PublishSharingStatus()
 	if(MOOS::Time()-last_time<1.0)
 		return true;
 
-	std::stringstream sso;
+	std::stringstream sso, policies;
 
 	RouteMap::iterator q;
 	for(q = routing_table_.begin();q!=routing_table_.end();q++)
@@ -634,6 +673,10 @@ bool Share::Impl::PublishSharingStatus()
 				sso<<" & ";
 			Route & route = *p;
 			sso<<route.dest_name<<":"<<route.dest_address.to_string();
+			policies << route.src_name << "->" << route.dest_name << ":"
+				<< route.dest_address.to_string() << ",behavior=" << route.behavior_name()
+				<< ",frequency=" << route.frequency << "Hz"
+				<< ",rate_clock=" << route.rate_clock_name() << ";";
 			if(route.multicast)
 			{
 				sso<<":multicast_"<<route.dest_address.port()-base_address_.port();
@@ -668,6 +711,7 @@ bool Share::Impl::PublishSharingStatus()
 
 	Notify("PSHARE_OUTPUT_SUMMARY",sso.str());
 	Notify("PSHARE_INPUT_SUMMARY",ssi.str());
+	Notify("PSHARE_OUTPUT_BEHAVIORS",policies.str());
 
 
 	return true;
@@ -712,10 +756,10 @@ bool  Share::Impl::AddMulticastAliasRoute(const std::string & src_name,
 				unsigned int channel_num,
 				double frequency,
 				double duration,
-				int max_shares)
+				int max_shares, Route::Behavior behavior, Route::RateClock rate_clock)
 {
 	MOOS::IPV4Address alias_address = GetAddressFromChannelAlias(channel_num);
-	return AddRoute(src_name,dest_name,alias_address,true,frequency,duration,max_shares);
+	return AddRoute(src_name,dest_name,alias_address,true,frequency,duration,max_shares,behavior,rate_clock);
 }
 
 bool  Share::Impl::AddRoute(const std::string & src_name,
@@ -724,7 +768,7 @@ bool  Share::Impl::AddRoute(const std::string & src_name,
 				bool multicast,
 				double frequency,
 				double duration,
-				int max_shares)
+				int max_shares, Route::Behavior behavior, Route::RateClock rate_clock)
 {
 
 	SocketMap::iterator mcg = socket_map_.find(address);
@@ -743,6 +787,8 @@ bool  Share::Impl::AddRoute(const std::string & src_name,
 		route.dest_name = trimed_dest_name;
 		route.src_name = trimed_src_name;
 		route.dest_address = address;
+		route.behavior = behavior;
+		route.rate_clock = rate_clock;
 		route.multicast = multicast;
 		route.frequency = frequency;
 		route.duration_of_share = duration;
@@ -787,7 +833,18 @@ bool  Share::Impl::AddRoute(const std::string & src_name,
 				route.duration_of_share = std::numeric_limits<double>::max();
 			}
 
-			//do the copy
+			// A repeated broker directive must not restart the rate clock or
+			// erase a pending one-shot value. Explicit policy changes flush it.
+			if(q->behavior == route.behavior && q->frequency == route.frequency &&
+				q->rate_clock == route.rate_clock) {
+				route.has_sent = q->has_sent;
+				route.last_sent_rate = q->last_sent_rate;
+				route.last_payload = q->last_payload;
+				route.has_pending = q->has_pending;
+				route.pending_message = q->pending_message;
+			} else if(q->has_pending && !SendRoute(q->pending_message, *q)) {
+				throw std::runtime_error("cannot change policy with unsent pending output");
+			}
 			*q=route;
 		}
 
@@ -803,6 +860,8 @@ bool  Share::Impl::AddRoute(const std::string & src_name,
 		}
 		route.dest_name = trimed_dest_name;
 		route.dest_address = address;
+		route.behavior = behavior;
+		route.rate_clock = rate_clock;
 		route.multicast = multicast;
 		route.frequency = frequency;
 		route.duration_of_share = duration;
@@ -954,7 +1013,8 @@ void Share::Impl::PrintRoutes()
 			else
 			    std::cout<<" @ " <<route.frequency <<"Hz";
 
-			std::cout<<std::endl;
+			std::cout << " behavior=" << route.behavior_name()
+				<< " rate_clock=" << route.rate_clock_name() << std::endl;
 		}
 
 	}
@@ -1107,92 +1167,116 @@ bool Share::Impl::ApplyWildcardRoutes( CMOOSMsg& msg)
 }
 
 
+// Only transport timestamp and message ID are excluded from repeat comparison.
+// Opaque data bytes, type, key, source, source-aux and community stay significant.
+static std::vector<unsigned char> OpaquePayload(const CMOOSMsg & original)
+{
+	CMOOSMsg msg = original;
+	msg.m_dfTime = 0.0;
+	msg.m_nID = 0;
+	std::vector<unsigned char> payload(msg.GetSizeInBytesWhenSerialised());
+	if(!msg.Serialize(payload.data(), payload.size()))
+		throw std::runtime_error("failed payload comparison serialization");
+	return payload;
+}
+
+bool Share::Impl::DispatchRoute(const CMOOSMsg & msg, Route & route)
+{
+	if(!route.IsActive(MOOS::Time()))
+		return false;
+	const bool limited = route.RateLimited(route.RateNow());
+	if(limited && route.behavior == Route::DROP)
+		return true; // Deliberately requested lossy behavior.
+	if(limited && route.behavior == Route::COALESCE &&
+		OpaquePayload(msg) == route.last_payload)
+		return true; // Distinct payloads ALWAYS pass, however close together.
+	if(limited && route.behavior == Route::LATEST) {
+		route.pending_message = msg;
+		route.has_pending = true;
+		return true;
+	}
+	const bool sent = SendRoute(msg, route);
+	if(sent)
+		route.has_pending = false;
+	return sent;
+}
+
+void Share::Impl::FlushPending()
+{
+	for(RouteMap::iterator group = routing_table_.begin(); group != routing_table_.end(); ++group) {
+		for(std::list<Route>::iterator it = group->second.begin(); it != group->second.end(); ++it) {
+			Route & route = *it;
+			if(!route.has_pending)
+				continue;
+			if(!route.IsActive(MOOS::Time())) {
+				std::cerr << "Pending output expired under explicit duration/max_shares: "
+					<< route.src_name << std::endl;
+				route.has_pending = false;
+				continue;
+			}
+			if(route.RateLimited(route.RateNow()))
+				continue;
+			try {
+				if(SendRoute(route.pending_message, route))
+					route.has_pending = false;
+			} catch(const std::exception & e) {
+				std::cerr << "Pending output send failed (retained): " << e.what() << std::endl;
+			}
+		}
+	}
+}
+
 bool Share::Impl::ApplyRoutes(CMOOSMsg & msg)
 {
-
-	std::cerr<<"applying route for "<<msg.GetString()<<"\n";
-	//do we know how to route this? double check
 	RouteMap::iterator g = routing_table_.find(msg.GetKey());
 	if(g == routing_table_.end())
 		throw std::runtime_error("no specified route");
 
-	//we need to find the socket to send via
-	std::list<Route> & route_list = g->second;
-
-	double now = MOOS::Time();
-
-	std::list<Route>::iterator q;
-	for(q = route_list.begin();q!=route_list.end();q++)
-	{
-		std::cerr<<"checking route  "<<q->to_string()<<"\n";
-
-		
-		//process every route
-		Route & route = *q;
-
-		//allow route to demur becasue for example
-		//  1) share is too often, 
-		//	2) outside duration
-		//  3) share count has been exceeded.
-		//  4) another reason privae to the share...
-		if(!route.IsActive(now)){
-			continue;
-		}
-
-		SocketMap::iterator mcg = socket_map_.find(route.dest_address);
-		if (mcg == socket_map_.end()) {
-			std::stringstream ss;
-			ss << "no output socket for "
-					<< route.dest_address.to_string() << std::endl;
-			PrintSocketMap();
-			throw std::runtime_error(ss.str());
-		}
-
-		Socket & relevant_socket = mcg->second;
-
-
-        if(verbose_)
-        {
-            std::cout<<std::setprecision(1);
-            std::cout<<MOOS::ConsoleColours::green()<<std::setw(10)<<std::fixed<<(MOOS::Time()-CMOOSApp::GetAppStartTime())
-            <<": "<<MOOS::ConsoleColours::reset();
-
-            std::cout<<"sending \""<<msg.m_sKey<<"\" as \""<<route.dest_name<<"\" to "<<route.dest_address.to_string()<<"\n";
-        }
-
-		//rename here...
-		msg.m_sKey = route.dest_name;
-
-		//serialise here
-		unsigned int msg_buffer_size = msg.GetSizeInBytesWhenSerialised();
-
-		if(msg_buffer_size>MAX_UDP_SIZE)
-		{
-			std::cerr<<"Message size exceeded payload size of "<<MAX_UDP_SIZE/1024<<" kB - not forwarding\n";
-			return false;
-		}
-
-		std::vector<unsigned char> buffer(msg_buffer_size);
-		if (!msg.Serialize(buffer.data(), msg_buffer_size))
-		{
-			throw std::runtime_error("failed msg serialisation");
-		}
-
-		//send here
-		if (sendto(relevant_socket.socket_fd, buffer.data(), buffer.size(), 0,
-				(struct sockaddr*) (&relevant_socket.sock_addr),
-				sizeof(relevant_socket.sock_addr)) < 0)
-		{
-			throw std::runtime_error("failed \"sendto\"");
-		}
-
-
-		route.last_time_sent = now;
-		route.num_shares_completed++;
+	for(std::list<Route>::iterator it = g->second.begin(); it != g->second.end(); ++it) {
+		DispatchRoute(msg, *it);
 	}
-
 	return true;
+}
 
+bool Share::Impl::SendRoute(const CMOOSMsg & original, Route & route)
+{
+	const double now = MOOS::Time();
+	if(!route.IsActive(now))
+		return false;
+
+	SocketMap::iterator socket = socket_map_.find(route.dest_address);
+	if(socket == socket_map_.end())
+		throw std::runtime_error("no output socket for " + route.dest_address.to_string());
+
+	// A separate copy per route preserves the source key and timestamp; one
+	// route's alias must not alter another route's policy or serialization.
+	CMOOSMsg msg = original;
+	msg.m_sKey = route.dest_name;
+	const unsigned int size = msg.GetSizeInBytesWhenSerialised();
+	if(size > MAX_UDP_SIZE) {
+		std::cerr << "Message size exceeded payload size of " << MAX_UDP_SIZE/1024
+			<< " kB - not forwarding " << original.GetKey() << std::endl;
+		return false;
+	}
+	std::vector<unsigned char> buffer(size);
+	if(!msg.Serialize(buffer.data(), size))
+		throw std::runtime_error("failed msg serialisation");
+
+	if(sendto(socket->second.socket_fd, buffer.data(), buffer.size(), 0,
+			(struct sockaddr*) (&socket->second.sock_addr),
+			sizeof(socket->second.sock_addr)) < 0)
+		throw std::runtime_error("failed sendto for " + route.dest_address.to_string());
+
+	if(verbose_)
+		std::cout << "sending " << original.GetKey() << " as " << route.dest_name
+			<< " to " << route.dest_address.to_string() << std::endl;
+	route.last_time_sent = now;
+	route.last_sent_rate = route.RateNow();
+	route.has_sent = true;
+	if(route.behavior == Route::COALESCE)
+		route.last_payload = OpaquePayload(original);
+	route.num_shares_completed++;
+	return true;
 }
 
 

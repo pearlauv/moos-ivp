@@ -59,11 +59,15 @@ class NodeBroker : public AppCastingMOOSApp
   void registerPingBridges(bool only_latest=false);
   void registerUserBridges();
 
-  void postPShareCommand(std::string src, std::string dest, std::string route);
+  void postPShareCommand(std::string src, std::string dest, std::string route,
+                        std::string frequency="", std::string behavior="", std::string rate_clock="");
 
  protected: // Configuration Variables
   std::vector<std::string> m_bridge_src_var;
   std::vector<std::string> m_bridge_alias;
+  std::vector<std::string> m_bridge_frequency;
+  std::vector<std::string> m_bridge_behavior;
+  std::vector<std::string> m_bridge_rate_clock;
 
   // Index on below vectors is a host to try as shoreside
   std::vector<std::string>  m_shore_community;

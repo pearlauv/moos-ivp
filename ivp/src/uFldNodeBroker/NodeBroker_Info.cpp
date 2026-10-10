@@ -105,6 +105,12 @@ void showExampleConfigAndExit()
   blk("  bridge = src=VIEW_POLYGON                                     ");
   blk("  bridge = src=VIEW_POINT                                       ");
   blk("  bridge = src=VIEW_SEGLIST                                     ");
+  blk("  bridge = src=STATUS,frequency=1,behavior=coalesce               ");
+  blk("  bridge = src=NAV_X,frequency=2,behavior=latest,rate_clock=wall  ");
+  blk("  // rate_clock: moos (default, warped seconds) or wall           ");
+  blk("  // behavior: forward (default), drop, coalesce, latest         ");
+  blk("  // Options are passed to pShare; latest discards intermediate  ");
+  blk("  // updates. coalesce suppresses identical repeats only.        ");
   blk("                                                                ");
   blk("  bridge = src=NODE_REPORT_LOCAL, alias=NODE_REPORT             ");
   blk("                                                                ");

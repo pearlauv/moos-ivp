@@ -45,6 +45,13 @@ void ShareHelp::PrintConfigurationExample()
 			<<YELLOW<<"  //forwarding to a list of places outputs\n"<<NORMAL<<
 			"  output = src_name = P,dest_name = H,route=multicast_9 & robots.ox.ac.uk:10200 & 178.4.5.6:9001\n\n"
 
+			<<YELLOW<<"  //explicit per-output rate behavior (opaque payloads)\n"<<NORMAL<<
+			"  output = src_name=STATUS,route=localhost:9200,frequency=1,behavior=coalesce\n"
+			"  output = src_name=NAV_X,route=localhost:9200,frequency=2,behavior=latest,rate_clock=wall\n"
+			"  // rate_clock: moos (default, warped seconds) or wall (monotonic real seconds)\n"
+			"  // behaviors: forward (default), drop, coalesce, latest\n"
+			"  // latest replaces pending values; coalesce never suppresses changed data\n\n"
+
 			<<YELLOW<<"  //setting up an input\n"<<NORMAL<<
 			"  input = route = multicast_9\n"
 			"  input = route = localhost:9067\n\n"
