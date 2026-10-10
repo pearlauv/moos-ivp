@@ -54,3 +54,14 @@ ENDIF (${APPLE})
 
 ADD_TEST(MyTest1 ${EXECUTABLE_OUTPUT_PATH}/pMarineViewer --version)
 
+# Opt-in native rendering regression; requires an OpenGL display (or Xvfb).
+ADD_EXECUTABLE(test_pMarineViewer_layers EXCLUDE_FROM_ALL
+  tests/test_vehicles_layer.cpp PMV_Viewer.cpp)
+TARGET_INCLUDE_DIRECTORIES(test_pMarineViewer_layers PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+GET_TARGET_PROPERTY(PMV_TEST_LIBS pMarineViewer LINK_LIBRARIES)
+TARGET_LINK_LIBRARIES(test_pMarineViewer_layers ${PMV_TEST_LIBS})
+IF (${APPLE})
+  SET_TARGET_PROPERTIES(test_pMarineViewer_layers PROPERTIES
+    LINK_FLAGS "-framework OpenGL -framework Cocoa")
+ENDIF (${APPLE})
+

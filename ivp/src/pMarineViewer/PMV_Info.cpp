@@ -134,6 +134,7 @@ void showExampleConfigAndExit()
   blk("                                                                ");
   blk("  // Vehicles Pull-Down Menu ===================================");
   blk("  vehicles_viewable       = true   // {TRUE, false}             ");
+  blk("  vehicles_layer          = top    // {TOP, bottom}; includes trails");
   blk("  vehicles_name_mode      = names  // {names, names+depth, off  ");
   blk("                                       names+mode, names+auxmode");
   blk("                                       names+shortmode}         ");

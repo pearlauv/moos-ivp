@@ -85,6 +85,7 @@ class PMV_Viewer : public MarineViewer
   void   setCenterView(std::string vname);
   
  private:
+  void   drawVehicles();
   void   drawVehicle(std::string, bool, std::string);
   void   drawTrailPoints(CPList&, unsigned int=0);
   void   handleMouse(int, int, std::string s="left");
@@ -100,6 +101,7 @@ class PMV_Viewer : public MarineViewer
   double      m_elapsed;
 
   bool        m_config_complete;
+  std::string m_vehicles_layer; // top (default) or bottom, relative to VIEW_* graphics
   
   unsigned int m_draw_count;
   double       m_last_draw_time;

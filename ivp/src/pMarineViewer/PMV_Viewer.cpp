@@ -82,6 +82,7 @@ PMV_Viewer::PMV_Viewer(int x, int y, int w, int h, const char *l)
   m_bclick_ix = 0;
 
   m_config_complete = false;
+  m_vehicles_layer = "top"; // Preserve the traditional drawing order.
 
   m_ledger.setHistorySize(500); // max history
   
@@ -124,6 +125,9 @@ void PMV_Viewer::draw()
 
   if(m_geo_settings.viewable("hash_viewable"))
     drawFastHash();
+
+  if(m_vehicles_layer == "bottom")
+    drawVehicles();
 
   vector<string> vnames = m_geoshapes_map.getVehiNames();
   for(unsigned int i=0; i<vnames.size(); i++) {
@@ -179,6 +183,18 @@ void PMV_Viewer::draw()
   }
   // End Draw Mouse position
 
+  if(m_vehicles_layer == "top")
+    drawVehicles();
+
+  glFlush();
+}
+
+//-------------------------------------------------------------
+// Procedure: drawVehicles()
+//      Note: Bodies, labels, bearing lines and trails share one layer.
+
+void PMV_Viewer::drawVehicles()
+{
   if(m_vehi_settings.isViewableVehicles()) {
     vector<string> svector = m_ledger.getVNames();
     unsigned int i, vsize = svector.size();
@@ -198,8 +214,6 @@ void PMV_Viewer::draw()
       drawVehicle(vehiname, isactive, vehibody);
     }
   }
-
-  glFlush();
 }
 
 //-------------------------------------------------------------
@@ -248,7 +262,14 @@ bool PMV_Viewer::setParam(string param, string value)
   bool handled = false;
   bool center_needs_adjusting = false;
   
-  if(param == "center_view") {
+  if(param == "vehicles_layer") {
+    string layer = tolower(value);
+    if((layer == "top") || (layer == "bottom")) {
+      m_vehicles_layer = layer;
+      handled = true;
+    }
+  }
+  else if(param == "center_view") {
     if((value=="average") || (value=="active") || (value=="reference")) {
       center_needs_adjusting = true;
       m_centric_view = value;
@@ -837,6 +858,8 @@ string PMV_Viewer::getStringInfo(string info_type, int precision)
     return(m_var_source[m_var_index]);
   if(info_type == "active_vehicle_name")
     return(active_vname);
+  if(info_type == "vehicles_layer")
+    return(m_vehicles_layer);
 
   double dresult = 0;
   if(info_type == "xpos")
