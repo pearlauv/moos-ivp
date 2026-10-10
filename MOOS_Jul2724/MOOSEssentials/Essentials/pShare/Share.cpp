@@ -259,7 +259,11 @@ bool Share::Impl::OnStartUp()
 	//return true;
 	EnableCommandMessageFiltering(true);
 
-	SetIterateMode(REGULAR_ITERATE_AND_COMMS_DRIVEN_MAIL);
+	// UDP reception is forwarded in Iterate(), not OnNewMail(). In mode 2
+	// CMOOSApp resets its iteration clock even for mail-only work, so a
+	// sustained local publication stream can starve Iterate indefinitely.
+	// Batch local mail at 40 Hz and guarantee inbound forwarding every tick.
+	SetIterateMode(REGULAR_ITERATE_AND_MAIL);
 	SetAppFreq(40,0);
 
 	try
