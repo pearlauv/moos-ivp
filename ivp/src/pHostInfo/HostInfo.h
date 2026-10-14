@@ -27,6 +27,7 @@
 #include <string>
 #include <list>
 #include <vector>
+#include "WifiStatus.h"
 #include "MOOS/libMOOS/Thirdparty/AppCasting/AppCastingMOOSApp.h"
 
 class HostInfo : public AppCastingMOOSApp
@@ -49,6 +50,7 @@ class HostInfo : public AppCastingMOOSApp
   int  generateIPInfoFiles();
   void gatherIPInfoFromFiles();
   void postIPInfo();
+  void postWifiInfo();
 
  protected: 
   std::string readOSXInfoIP(std::string);
@@ -64,6 +66,13 @@ class HostInfo : public AppCastingMOOSApp
   std::string   m_default_hostip;
   bool          m_default_hostip_force;
   std::string   m_prefer_interface;
+  // Disabled unless explicitly configured; independent of IP auto-discovery.
+  std::string   m_wifi_interface;
+  std::string   m_wifi_prefix;
+  double        m_wifi_poll_interval;
+  bool          m_wifi_syslog;
+  double        m_wifi_last_poll;
+  WifiStatus    m_wifi_status;
   
  protected: // state variables
 

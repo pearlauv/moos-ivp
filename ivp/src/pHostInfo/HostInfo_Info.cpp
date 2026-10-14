@@ -101,6 +101,11 @@ void showExampleConfigAndExit()
   blk("                                                                ");
   blk("  default_hostip_force = 192.168.0.55                           ");
   blk("  prefer_interface     = wlan0                                  ");
+  blk("  // Optional Linux local Wi-Fi sampling; disabled by default   ");
+  blk("  wifi_interface       = wlan1                                 ");
+  blk("  wifi_prefix          = UAV_WIFI  // default PHI_WIFI          ");
+  blk("  wifi_poll_interval   = 2         // seconds, range 1..60      ");
+  blk("  wifi_syslog          = true      // default false             ");
   blk("                                                                ");
   blk("  app_logging = true  // {true or file} By default disabled     ");
   blk("}                                                               ");
@@ -131,6 +136,12 @@ void showInterfaceAndExit()
   blk("  PHI_HOST_INFO       = community=alpha,hostip=123.1.1.0,       ");
   blk("                        port_db=9000,timewarp=8,                ");
   blk("                        pshare_iroutes=localhost:9200&multicast_9");
+  blk("                                                                ");
+  blk("  Optional <wifi_prefix>_{INTERFACE,STATUS,STATUS_VALID,        ");
+  blk("    LINK_UP,SIGNAL_DBM,SIGNAL_VALID,SAMPLE_TIME}                ");
+  blk("  RX signal is local driver dBm, not RC RSSI or TX power.      ");
+  blk("  Require fresh SAMPLE_TIME and SIGNAL_VALID=1 at consumers.  ");
+  blk("  wifi_syslog tags local observations pHostInfo-wifi.          ");
   blk("                                                                ");
   blk("SUBSCRIPTIONS:                                                  ");
   blk("------------------------------------                            ");

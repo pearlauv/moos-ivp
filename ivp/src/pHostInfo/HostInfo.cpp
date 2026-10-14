@@ -29,6 +29,7 @@
 #include "FileBuffer.h"
 #include "MBUtils.h"
 #include "ACBlock.h"
+#include <syslog.h>
 
 using namespace std;
 
@@ -41,6 +42,10 @@ HostInfo::HostInfo()
   m_tmp_file_dir   = "~/";
   m_default_hostip = "localhost";   // fall-back ip address
   m_default_hostip_force = false;   // Force use fall-back for debugging
+  m_wifi_prefix = "PHI_WIFI";
+  m_wifi_poll_interval = 2;
+  m_wifi_syslog = false;
+  m_wifi_last_poll = -1;
 
   m_ip_info_files_generated = false;
   m_ip_info_gathered = false;
@@ -121,8 +126,45 @@ bool HostInfo::Iterate()
   if((!m_ip_info_posted) || ((m_iteration % 10) == 0))
     postIPInfo();
 
+  // Fixed advertised IPs must not disable board-local Wi-Fi observations.
+  postWifiInfo();
   AppCastingMOOSApp::PostReport();
   return(true);
+}
+
+//---------------------------------------------------------
+// Procedure: postWifiInfo
+// Measurement time is the host read time, not the last received RF frame time.
+// Shoreside must check timestamp age as well as SIGNAL_VALID: a lost network
+// link can prevent delivery of the later disconnected/invalid publication.
+
+void HostInfo::postWifiInfo()
+{
+  if(m_wifi_interface.empty())
+    return;
+  const double now = MOOSTime();
+  if(m_wifi_last_poll >= 0 && now >= m_wifi_last_poll &&
+     now - m_wifi_last_poll < m_wifi_poll_interval)
+    return;
+  m_wifi_last_poll = now;
+  m_wifi_status = readWifiStatus(m_wifi_interface);
+  // Optional local journal history survives loss of the shoreside data path and
+  // is independent of pLogger delivery. No journald/service settings are changed.
+  if(m_wifi_syslog) {
+    const string signal = m_wifi_status.signal_valid ?
+      doubleToStringX(m_wifi_status.signal_dbm, 1) + " dBm" : "unavailable";
+    syslog(LOG_INFO, "interface=%s status_valid=%d link_up=%d signal_valid=%d signal=%s sample_time=%.6f",
+           m_wifi_interface.c_str(), int(m_wifi_status.status_valid),
+           int(m_wifi_status.link_up), int(m_wifi_status.signal_valid), signal.c_str(), now);
+  }
+  Notify(m_wifi_prefix + "_INTERFACE", m_wifi_interface);
+  Notify(m_wifi_prefix + "_STATUS_VALID", m_wifi_status.status_valid ? 1.0 : 0.0);
+  Notify(m_wifi_prefix + "_LINK_UP", m_wifi_status.link_up ? 1.0 : 0.0);
+  Notify(m_wifi_prefix + "_SIGNAL_VALID", m_wifi_status.signal_valid ? 1.0 : 0.0);
+  if(m_wifi_status.signal_valid)
+    Notify(m_wifi_prefix + "_SIGNAL_DBM", m_wifi_status.signal_dbm);
+  Notify(m_wifi_prefix + "_STATUS", m_wifi_status.detail);
+  Notify(m_wifi_prefix + "_SAMPLE_TIME", now);
 }
 
 //---------------------------------------------------------
@@ -151,6 +193,29 @@ bool HostInfo::OnStartUp()
       }
     }
     
+    else if(param == "wifi_interface") {
+      handled = validWifiInterface(value);
+      if(handled)
+        m_wifi_interface = value;
+    }
+    else if(param == "wifi_prefix") {
+      handled = !value.empty();
+      for(unsigned char c : value) {
+        if(!std::isalnum(c) && c != '_')
+          handled = false;
+      }
+      if(handled)
+        m_wifi_prefix = value;
+    }
+    else if(param == "wifi_syslog")
+      handled = setBooleanOnString(m_wifi_syslog, value);
+    else if(param == "wifi_poll_interval") {
+      double interval = 0;
+      handled = setDoubleOnString(interval, value) && std::isfinite(interval) &&
+        interval >= 1 && interval <= 60;
+      if(handled)
+        m_wifi_poll_interval = interval;
+    }
     else if(param == "prefer_interface") 
       handled = handleConfigPreferInterface(value); 
     else if((param == "default_hostip") ||
@@ -172,6 +237,9 @@ bool HostInfo::OnStartUp()
     if(!handled)
       reportUnhandledConfigWarning(orig);
   }
+
+  if(m_wifi_syslog && !m_wifi_interface.empty())
+    openlog("pHostInfo-wifi", LOG_PID, LOG_USER);
 
   // Get the MOOSDB Port Information
   m_host_port_db = doubleToString(m_lServerPort,0);
@@ -637,6 +705,13 @@ bool HostInfo::buildReport()
   
   block = ACBlock("  PHI_HOST_INFO:        ", m_host_record_all, 42);
   m_msgs << block.getFormattedString();
+  if(!m_wifi_interface.empty()) {
+    m_msgs << endl << "  Wi-Fi interface: " << m_wifi_interface
+           << "  status: " << m_wifi_status.detail << endl;
+    if(m_wifi_status.signal_valid)
+      m_msgs << "  Local RX signal: " << m_wifi_status.signal_dbm << " dBm" << endl;
+    m_msgs << "  Wi-Fi host sample time: " << m_wifi_last_poll << endl;
+  }
 
   return(true);
 }
